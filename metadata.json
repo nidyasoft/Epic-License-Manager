@@ -1,0 +1,6 @@
+{
+  "name": "Epic License Manager Studio",
+  "description": "WordPress 7.x / WooCommerce PHP 8.2+ License Manager plugin generator with Gregorian/Jalali/Hijri calendar engine, Ed25519 offline tokens, dynamic ACF reporting, and Android/Web AI Studio SDK.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
