@@ -13,21 +13,38 @@ export interface CalendarSettings {
 export interface WooSettings {
   storeDomain: string;
   triggerStatuses: OrderStatus[];
-  blockGuestCheckout: boolean;
-  requireFirstName: boolean;
-  requireLastName: boolean;
-  requireMobile: boolean;
-  requireEmail: boolean;
+  conditionalCartRegistration: boolean;
+  sodiumAvailable: boolean;
+  autoMuPatchInstalled: boolean;
+}
+
+export interface PromoPlanItem {
+  variationId: string;
+  title: string;
+  durationLabel: string;
+  priceToman: number;
+  regularPriceToman: number;
+  highlightBadge?: string;
 }
 
 export interface PromoConfig {
+  id: string;
+  slug: string;
+  title: string;
+  appSlug: string;
   enabled: boolean;
   displayMode: 'floating_modal' | 'inline_banner';
   intervalSeconds: number;
   showOnLockedClick: boolean;
+  themeColor: string;
+  headline: string;
+  subheadline: string;
+  discountBadge: string;
   ctaLabel: string;
   ctaUrl: string;
+  selectedVariationIds: string[];
   htmlContent: string;
+  permalinkPath: string;
 }
 
 export interface ElmApp {
@@ -40,6 +57,8 @@ export interface ElmApp {
   offlineGraceDays: number;
   publicKeyPem: string;
   publicKeyHex: string;
+  publicKeyBase64: string;
+  isActive: boolean;
   purchaseUrl: string;
   gatedFeatures: string[];
   createdAt: string;
@@ -83,6 +102,8 @@ export interface ElmLicense {
   appName: string;
   orderId: number;
   orderStatus: OrderStatus;
+  orderTotalToman: number;
+  paymentMethod: string;
   variationLabel: string;
   duration: LicenseDuration;
   status: LicenseStatus;
@@ -93,10 +114,15 @@ export interface ElmLicense {
   customerEmail: string;
   hardwareHash: string | null;
   deviceModel: string | null;
+  osVersion: string | null;
   activatedAt: string | null;
   expiresAt: string | null;
   createdAt: string;
   lastSyncAt: string | null;
+  reinstallAttempts: number;
+  trialStatus: 'none' | 'active' | 'expired' | 'converted';
+  lastErrorCode: string | null;
+  isTestSandbox?: boolean;
   customerMeta: CustomerExtraFields;
 }
 
@@ -111,11 +137,16 @@ export interface ElmTrialRecord {
   installCount: number;
   blockedReinstallAttempts: number;
   lastSeenAt: string;
+  lastErrorCode: string | null;
+  isTestSandbox?: boolean;
 }
 
 export interface WooOrderRecord {
   id: number;
   status: OrderStatus;
+  isGuestOrder: boolean;
+  hasLicensedProduct: boolean;
+  paymentMethod: string;
   customerFirstName: string;
   customerLastName: string;
   customerMobile: string;
@@ -145,16 +176,84 @@ export interface PluginVirtualFile {
   content: string;
 }
 
+// ACF-style Custom Field Builder Types
+export type CustomFieldTarget =
+  | 'wc_product'
+  | 'wc_variation'
+  | 'wp_user'
+  | 'wp_post'
+  | 'wp_page'
+  | 'wc_order';
+
+export type CustomFieldType =
+  | 'text'
+  | 'number'
+  | 'email'
+  | 'url'
+  | 'textarea'
+  | 'select'
+  | 'checkbox'
+  | 'radio'
+  | 'true_false'
+  | 'date_triple'
+  | 'media'
+  | 'repeater';
+
+export type ConditionParam =
+  | 'user_logged_in'
+  | 'user_role'
+  | 'page_id'
+  | 'url_pattern'
+  | 'wc_product_type'
+  | 'wc_variation_id'
+  | 'field_equals'
+  | 'has_active_license';
+
+export interface FieldConditionRule {
+  id: string;
+  param: ConditionParam;
+  operator: 'equals' | 'not_equals' | 'contains';
+  value: string;
+}
+
+export interface CustomFieldItem {
+  id: string;
+  name: string;
+  label: string;
+  type: CustomFieldType;
+  required: boolean;
+  defaultValue: string;
+  choices: string[]; // for select / checkbox / radio
+  subFields?: Array<{ name: string; label: string; type: 'text' | 'number' | 'url' }>; // for repeater
+  showInReport: boolean;
+}
+
+export interface CustomFieldGroup {
+  id: string;
+  title: string;
+  slug: string;
+  targets: CustomFieldTarget[];
+  autoInjectFrontend: boolean;
+  injectHook:
+    | 'the_content_after'
+    | 'wc_single_product_summary'
+    | 'wc_before_add_to_cart'
+    | 'wc_account_dashboard';
+  conditions: FieldConditionRule[];
+  fields: CustomFieldItem[];
+  active: boolean;
+}
+
 export interface SimulatorState {
   calendar: CalendarSettings;
   woocommerce: WooSettings;
-  promo: PromoConfig;
+  promos: PromoConfig[];
   apps: ElmApp[];
   variations: WooProductVariation[];
   orders: WooOrderRecord[];
   licenses: ElmLicense[];
   trials: ElmTrialRecord[];
+  customFieldGroups: CustomFieldGroup[];
   availableExtraFields: DynamicFieldDefinition[];
   apiLogs: ApiExchangeLog[];
-  serverClockOffsetHours: number;
 }

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Calendar, Plus, ShoppingBag, ShieldAlert } from 'lucide-react';
+import { Calendar, Plus, ShoppingBag, ShieldAlert, CheckCircle2 } from 'lucide-react';
 import { formatCalendarDate, toPersianDigits } from '../shared/calendar.js';
 import type {
   CalendarSettings,
@@ -23,7 +23,10 @@ interface Props {
     bundlePriceToman: number;
   }) => Promise<void>;
   onCheckout: (payload: {
+    hasLicensedProduct: boolean;
     isGuestAttempt: boolean;
+    createAccountAtCheckout: boolean;
+    paymentMethod: string;
     firstName: string;
     lastName: string;
     mobile: string;
@@ -53,8 +56,11 @@ export const CalendarWooView: React.FC<Props> = ({
   const [varRegPrice, setVarRegPrice] = useState(1000000);
   const [varBundlePrice, setVarBundlePrice] = useState(640000);
 
-  // Checkout Gate Simulator
-  const [isGuestAttempt, setIsGuestAttempt] = useState(false);
+  // Conditional Cart Checkout Simulator
+  const [hasLicensedProduct, setHasLicensedProduct] = useState(true);
+  const [isGuestAttempt, setIsGuestAttempt] = useState(true);
+  const [createAccountAtCheckout, setCreateAccountAtCheckout] = useState(true);
+  const [paymentMethod, setPaymentMethod] = useState('زرین‌پال (Zarinpal)');
   const [firstName, setFirstName] = useState('نیما');
   const [lastName, setLastName] = useState('فرهادی');
   const [mobile, setMobile] = useState('09129876543');
@@ -86,7 +92,10 @@ export const CalendarWooView: React.FC<Props> = ({
     e.preventDefault();
     setCheckoutMsg(null);
     const res = await onCheckout({
+      hasLicensedProduct,
       isGuestAttempt,
+      createAccountAtCheckout,
+      paymentMethod,
       firstName,
       lastName,
       mobile,
@@ -98,10 +107,11 @@ export const CalendarWooView: React.FC<Props> = ({
     if (res.ok) {
       setCheckoutMsg({
         type: 'ok',
-        text:
-          res.issuedCount && res.issuedCount > 0
-            ? `سفارش ثبت شد و ${res.issuedCount} کلید لایسنس مجزا به حساب کاربری مشتری ارسال گردید.`
-            : `سفارش با وضعیت ${orderStatus} ثبت شد (در انتظار تغییر به وضعیت مجاز برای صدور کلید).`,
+        text: !hasLicensedProduct
+          ? 'سفارش محصول غیرلایسنسی با تسویه‌حساب مهمان ووکامرس ثبت شد (پلاگین هیچ دخالتی در محصولات عادی نکرد).'
+          : res.issuedCount && res.issuedCount > 0
+          ? `سفارش با حساب کاربری مشتری ثبت شد و ${res.issuedCount} کلید لایسنس مجزا صادر گردید.`
+          : `سفارش با وضعیت ${orderStatus} ثبت شد (در انتظار وضعیت مجاز برای صدور کلید).`,
       });
     } else {
       setCheckoutMsg({ type: 'err', text: res.error || 'خطا در ثبت سفارش' });
@@ -153,9 +163,7 @@ export const CalendarWooView: React.FC<Props> = ({
         <div className="flex items-center gap-2">
           <Calendar className="w-4 h-4 text-sky-800" />
           <h2 className="text-base font-semibold text-slate-900">
-            {lang === 'fa'
-              ? 'موتور تقویم سه‌گانه مستقل (بدون دستکاری فایل‌های هسته وردپرس)'
-              : 'Independent 3-Zone Calendar Engine (Non-Destructive WP Hooks)'}
+            موتور تقویم سه‌گانه مستقل (بدون دستکاری فایل‌های هسته وردپرس)
           </h2>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -177,19 +185,15 @@ export const CalendarWooView: React.FC<Props> = ({
         </div>
       </div>
 
-      {/* Variable Product Bundles (1 to 10 licenses) + Checkout Gate */}
+      {/* Variable Product Bundles + Conditional Cart Checkout Simulator */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         <div className="lg:col-span-7 bg-white border border-slate-200 rounded-xl p-5 space-y-4">
           <div>
             <h2 className="text-base font-semibold text-slate-900">
-              {lang === 'fa'
-                ? 'نگاشت متغیرهای ووکامرس (بسته‌های ۱ تا ۱۰ لایسنس با قیمت تشویقی)'
-                : 'WooCommerce Variable Product Mapping (1–10 License Bundles)'}
+              نگاشت متغیرهای ووکامرس (بسته‌های ۱ تا ۱۰ لایسنس با قیمت تشویقی)
             </h2>
             <p className="text-xs text-slate-500 mt-1">
-              {lang === 'fa'
-                ? 'قیمت‌گذاری کاملاً در ووکامرس انجام می‌شود؛ پلاگین تشخیص می‌دهد هر متغیر چند لایسنس مجزا تولید کند.'
-                : 'Pricing stays strictly inside WooCommerce; plugin maps each variation to exact license key count.'}
+              قیمت‌گذاری کاملاً در ووکامرس انجام می‌شود؛ پلاگین تشخیص می‌دهد هر متغیر چند لایسنس مجزا تولید کند.
             </p>
           </div>
 
@@ -293,7 +297,7 @@ export const CalendarWooView: React.FC<Props> = ({
           </form>
         </div>
 
-        {/* Mandatory Checkout Registration Gate Simulator */}
+        {/* Conditional Cart-Based Checkout Simulator */}
         <form
           onSubmit={handleSimulateCheckout}
           className="lg:col-span-5 bg-white border border-slate-200 rounded-xl p-5 space-y-4"
@@ -301,74 +305,123 @@ export const CalendarWooView: React.FC<Props> = ({
           <div className="flex items-center gap-2">
             <ShoppingBag className="w-4 h-4 text-sky-800" />
             <h2 className="text-base font-semibold text-slate-900">
-              شبیه‌ساز ثبت‌نام اجباری و پرداخت ووکامرس
+              شبیه‌ساز تسویه‌حساب شرطی ووکامرس
             </h2>
           </div>
 
-          <label className="flex items-center gap-2 p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-700 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={isGuestAttempt}
-              onChange={(e) => setIsGuestAttempt(e.target.checked)}
-            />
-            <span>شبیه‌سازی تلاش کاربر مهمان (بدون لاگین/ثبت‌نام) برای آزمایش مسدودسازی</span>
-          </label>
+          <p className="text-xs text-slate-500 leading-relaxed">
+            فیلدهای صورتحساب و خرید مهمان ووکامرس تغییر عمومی نمی‌کنند؛ فقط اگر سبد خرید شامل محصول لایسنس‌دار باشد، کاربر مهمان ملزم به ورود یا ایجاد حساب در تسویه‌حساب می‌شود.
+          </p>
 
-          <div className="grid grid-cols-2 gap-2.5">
-            <input
-              type="text"
-              value={firstName}
-              onChange={(e) => setFirstName(e.target.value)}
-              placeholder="نام *"
-              className="px-3 py-2 text-xs border border-slate-300 rounded-lg"
-            />
-            <input
-              type="text"
-              value={lastName}
-              onChange={(e) => setLastName(e.target.value)}
-              placeholder="نام خانوادگی *"
-              className="px-3 py-2 text-xs border border-slate-300 rounded-lg"
-            />
-            <input
-              type="text"
-              dir="ltr"
-              value={mobile}
-              onChange={(e) => setMobile(e.target.value)}
-              placeholder="0912... *"
-              className="px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg"
-            />
-            <input
-              type="email"
-              dir="ltr"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="user@domain.ir *"
-              className="px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg"
-            />
+          <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg">
+            <button
+              type="button"
+              onClick={() => setHasLicensedProduct(true)}
+              className={`flex-1 py-1.5 px-2 text-xs font-medium rounded-md ${
+                hasLicensedProduct ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
+              }`}
+            >
+              سبد شامل لایسنس اپیک
+            </button>
+            <button
+              type="button"
+              onClick={() => setHasLicensedProduct(false)}
+              className={`flex-1 py-1.5 px-2 text-xs font-medium rounded-md ${
+                !hasLicensedProduct ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
+              }`}
+            >
+              محصول عادی (بدون لایسنس)
+            </button>
           </div>
 
-          <select
-            value={selectedVariationId}
-            onChange={(e) => setSelectedVariationId(e.target.value)}
-            className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
-          >
-            {state.variations.map((v) => (
-              <option key={v.id} value={v.id}>
-                {v.variationLabel} — {toPersianDigits(v.bundlePriceToman.toLocaleString())} تومان
-              </option>
-            ))}
-          </select>
+          <div className="space-y-2 text-xs">
+            <label className="flex items-center gap-2 p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-slate-700 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={isGuestAttempt}
+                onChange={(e) => setIsGuestAttempt(e.target.checked)}
+              />
+              <span>کاربر وارد حساب نشده (مهمان)</span>
+            </label>
+            {isGuestAttempt && hasLicensedProduct && (
+              <label className="flex items-center gap-2 p-2.5 bg-sky-50 border border-sky-200 rounded-lg text-sky-900 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={createAccountAtCheckout}
+                  onChange={(e) => setCreateAccountAtCheckout(e.target.checked)}
+                />
+                <span>ساخت حساب کاربری حین تسویه‌حساب (`woocommerce_checkout_registration_required`)</span>
+              </label>
+            )}
+          </div>
 
-          <div className="flex items-center justify-between gap-2 text-xs">
-            <span className="text-slate-600">وضعیت خروجی سفارش از درگاه:</span>
+          {hasLicensedProduct && (
+            <>
+              <div className="grid grid-cols-2 gap-2.5">
+                <input
+                  type="text"
+                  value={firstName}
+                  onChange={(e) => setFirstName(e.target.value)}
+                  placeholder="نام"
+                  className="px-3 py-2 text-xs border border-slate-300 rounded-lg"
+                />
+                <input
+                  type="text"
+                  value={lastName}
+                  onChange={(e) => setLastName(e.target.value)}
+                  placeholder="نام خانوادگی"
+                  className="px-3 py-2 text-xs border border-slate-300 rounded-lg"
+                />
+                <input
+                  type="text"
+                  dir="ltr"
+                  value={mobile}
+                  onChange={(e) => setMobile(e.target.value)}
+                  placeholder="0912..."
+                  className="px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg"
+                />
+                <input
+                  type="email"
+                  dir="ltr"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="user@domain.ir"
+                  className="px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg"
+                />
+              </div>
+
+              <select
+                value={selectedVariationId}
+                onChange={(e) => setSelectedVariationId(e.target.value)}
+                className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
+              >
+                {state.variations.map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.variationLabel} — {toPersianDigits(v.bundlePriceToman.toLocaleString())} تومان
+                  </option>
+                ))}
+              </select>
+            </>
+          )}
+
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <select
+              value={paymentMethod}
+              onChange={(e) => setPaymentMethod(e.target.value)}
+              className="px-2.5 py-1.5 border border-slate-300 rounded-lg"
+            >
+              <option value="زرین‌پال (Zarinpal)">درگاه زرین‌پال</option>
+              <option value="آیدی‌پی (IDPay)">درگاه آیدی‌پی</option>
+              <option value="کارت‌به‌کارت تاییدشده">کارت‌به‌کارت</option>
+            </select>
             <select
               value={orderStatus}
               onChange={(e) => setOrderStatus(e.target.value as OrderStatus)}
-              className="px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg font-mono"
+              className="px-2.5 py-1.5 border border-slate-300 rounded-lg font-mono"
             >
-              <option value="completed">completed (تکمیل‌شده)</option>
-              <option value="processing">processing (در حال انجام)</option>
-              <option value="pending">pending (در انتظار پرداخت)</option>
+              <option value="completed">completed</option>
+              <option value="processing">processing</option>
+              <option value="pending">pending</option>
             </select>
           </div>
 
@@ -380,7 +433,11 @@ export const CalendarWooView: React.FC<Props> = ({
                   : 'bg-red-50 border-red-200 text-red-900'
               }`}
             >
-              {checkoutMsg.type === 'err' && <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5" />}
+              {checkoutMsg.type === 'err' ? (
+                <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5" />
+              ) : (
+                <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+              )}
               <span>{checkoutMsg.text}</span>
             </div>
           )}
@@ -389,7 +446,7 @@ export const CalendarWooView: React.FC<Props> = ({
             type="submit"
             className="w-full py-2.5 px-4 text-xs font-medium bg-sky-800 text-white rounded-lg hover:bg-sky-900 transition-colors"
           >
-            ثبت سفارش ووکامرس و تست صدور کلیدها
+            ثبت سفارش و تست شرط تسویه‌حساب
           </button>
 
           {/* Recent WooCommerce Orders & Issued Keys */}
@@ -400,7 +457,7 @@ export const CalendarWooView: React.FC<Props> = ({
                 <div key={ord.id} className="p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs space-y-1.5">
                   <div className="flex items-center justify-between gap-2">
                     <span className="font-semibold text-slate-900 tabular-nums">
-                      سفارش #{ord.id} · {ord.customerFirstName} {ord.customerLastName}
+                      سفارش #{ord.id} · {ord.customerFirstName} {ord.customerLastName} ({ord.paymentMethod})
                     </span>
                     <select
                       value={ord.status}

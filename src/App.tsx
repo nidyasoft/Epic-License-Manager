@@ -5,19 +5,23 @@ import {
   Download,
   FileSpreadsheet,
   Languages,
+  Layers,
   Megaphone,
   PackageCheck,
   RotateCcw,
   Smartphone,
 } from 'lucide-react';
 import { CalendarWooView } from './components/CalendarWooView.js';
+import { CustomFieldsView } from './components/CustomFieldsView.js';
 import { PhoneApiLabView } from './components/PhoneApiLabView.js';
 import { PluginBuilderView } from './components/PluginBuilderView.js';
 import { PromoBuilderView } from './components/PromoBuilderView.js';
 import { ReportsView } from './components/ReportsView.js';
 import { SdkDocsView } from './components/SdkDocsView.js';
+import { fetchJson } from './shared/http.js';
 import type {
   CalendarSettings,
+  CustomFieldGroup,
   LicenseDuration,
   OrderStatus,
   PluginVirtualFile,
@@ -25,7 +29,7 @@ import type {
   SimulatorState,
 } from './shared/types.js';
 
-type NavSection = 'plugin' | 'calendar_woo' | 'phone_lab' | 'promo' | 'reports' | 'sdk';
+type NavSection = 'plugin' | 'custom_fields' | 'calendar_woo' | 'phone_lab' | 'promo' | 'reports' | 'sdk';
 
 export default function App() {
   const [section, setSection] = useState<NavSection>('plugin');
@@ -43,15 +47,10 @@ export default function App() {
   const loadAll = useCallback(async () => {
     try {
       setError(null);
-      const [simRes, filesRes] = await Promise.all([
-        fetch('/api/sim/state'),
-        fetch('/api/plugin/files'),
+      const [simJson, filesJson] = await Promise.all([
+        fetchJson<{ state: SimulatorState }>('/api/sim/state'),
+        fetchJson<{ files: PluginVirtualFile[] }>('/api/plugin/files'),
       ]);
-      if (!simRes.ok || !filesRes.ok) {
-        throw new Error('خطا در دریافت اطلاعات از سرور');
-      }
-      const simJson = (await simRes.json()) as { state: SimulatorState };
-      const filesJson = (await filesRes.json()) as { files: PluginVirtualFile[] };
       setState(simJson.state);
       setFiles(filesJson.files);
     } catch (e) {
@@ -96,6 +95,37 @@ export default function App() {
     await loadAll();
   };
 
+  const handleUpdateApp = async (
+    appId: string,
+    patch: Record<string, unknown>
+  ) => {
+    await fetch(`/api/sim/apps/${encodeURIComponent(appId)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    await loadAll();
+  };
+
+  const handleToggleApp = async (appId: string) => {
+    await fetch(`/api/sim/apps/${encodeURIComponent(appId)}/toggle`, { method: 'POST' });
+    await loadAll();
+  };
+
+  const handleSaveCustomFieldGroup = async (group: CustomFieldGroup) => {
+    await fetch('/api/sim/custom-fields', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(group),
+    });
+    await loadAll();
+  };
+
+  const handleDeleteCustomFieldGroup = async (id: string) => {
+    await fetch(`/api/sim/custom-fields/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    await loadAll();
+  };
+
   const handleUpdateCalendar = async (cal: CalendarSettings) => {
     await fetch('/api/sim/settings/calendar', {
       method: 'PUT',
@@ -123,7 +153,10 @@ export default function App() {
   };
 
   const handleCheckout = async (payload: {
+    hasLicensedProduct: boolean;
     isGuestAttempt: boolean;
+    createAccountAtCheckout: boolean;
+    paymentMethod: string;
     firstName: string;
     lastName: string;
     mobile: string;
@@ -132,12 +165,14 @@ export default function App() {
     quantityOrdered: number;
     initialStatus: OrderStatus;
   }) => {
-    const res = await fetch('/api/sim/orders/checkout', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    const data = (await res.json()) as { ok: boolean; error?: string; issuedLicenses?: unknown[] };
+    const data = await fetchJson<{ ok: boolean; error?: string; issuedLicenses?: unknown[] }>(
+      '/api/sim/orders/checkout',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }
+    );
     await loadAll();
     return { ok: data.ok, error: data.error, issuedCount: data.issuedLicenses?.length ?? 0 };
   };
@@ -151,9 +186,9 @@ export default function App() {
     await loadAll();
   };
 
-  const handleSavePromo = async (patch: Partial<PromoConfig>) => {
-    await fetch('/api/sim/promo', {
-      method: 'PUT',
+  const handleSavePromo = async (patch: Partial<PromoConfig> & { autoBuildHtml?: boolean }) => {
+    await fetch('/api/sim/promos', {
+      method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch),
     });
@@ -167,10 +202,11 @@ export default function App() {
 
   const navItems: { id: NavSection; labelFa: string; labelEn: string; icon: typeof PackageCheck }[] = [
     { id: 'plugin', labelFa: 'بسته‌ساز و کد پلاگین ZIP', labelEn: 'Plugin ZIP & Source', icon: PackageCheck },
+    { id: 'custom_fields', labelFa: 'فیلدساز سفارشی (ACF)', labelEn: 'Custom Fields (ACF)', icon: Layers },
     { id: 'calendar_woo', labelFa: 'تقویم سه‌گانه و ووکامرس', labelEn: 'Calendars & WooCommerce', icon: CalendarCog },
     { id: 'phone_lab', labelFa: 'تستر API و شبیه‌ساز گوشی', labelEn: 'Live API & Phone Lab', icon: Smartphone },
     { id: 'promo', labelFa: 'تبلیغات HTML موبایل', labelEn: 'HTML Mobile Promos', icon: Megaphone },
-    { id: 'reports', labelFa: 'گزارش جامع و فیلدهای ACF', labelEn: 'Reports & ACF Export', icon: FileSpreadsheet },
+    { id: 'reports', labelFa: 'گزارش جامع و خروجی اکسل', labelEn: 'Reports & XLSX Export', icon: FileSpreadsheet },
     { id: 'sdk', labelFa: 'مستندات SDK و AI Studio', labelEn: 'SDK & AI Studio Prompt', icon: BookOpen },
   ];
 
@@ -231,7 +267,7 @@ export default function App() {
 
       {/* Main Content */}
       <div className="flex-1 flex flex-col min-w-0">
-        {/* Clean 3-zone / SaaS Top Header */}
+        {/* Clean Top Header */}
         <header className="bg-white border-b border-slate-200 px-6 py-3.5 flex items-center justify-between gap-8">
           <div className="text-sm font-medium text-slate-600 truncate">
             <span>Epic License Manager</span>
@@ -281,7 +317,17 @@ export default function App() {
                   lang={lang}
                   onSaveWooSettings={handleSaveWooSettings}
                   onCreateApp={handleCreateApp}
+                  onUpdateApp={handleUpdateApp}
+                  onToggleApp={handleToggleApp}
                   onDownloadZip={handleDownloadZip}
+                />
+              )}
+              {section === 'custom_fields' && (
+                <CustomFieldsView
+                  state={state}
+                  lang={lang}
+                  onSaveGroup={handleSaveCustomFieldGroup}
+                  onDeleteGroup={handleDeleteCustomFieldGroup}
                 />
               )}
               {section === 'calendar_woo' && (

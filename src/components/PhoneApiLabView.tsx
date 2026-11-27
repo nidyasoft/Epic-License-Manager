@@ -1,6 +1,8 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
+  AlertTriangle,
   Clock,
+  Eraser,
   Lock,
   RefreshCw,
   ShieldCheck,
@@ -10,6 +12,7 @@ import {
   Wifi,
   WifiOff,
 } from 'lucide-react';
+import { fetchJson } from '../shared/http.js';
 import type { LicenseMode, SimulatorState } from '../shared/types.js';
 
 interface Props {
@@ -25,26 +28,57 @@ export const PhoneApiLabView: React.FC<Props> = ({ state, onRefreshState }) => {
   const [modeOverride, setModeOverride] = useState<LicenseMode>(activeApp?.mode ?? 'method2_trial');
   const [hardwareHash] = useState('android-8f3c91a4d2e07b99');
   const [isOffline, setIsOffline] = useState(false);
+  const [usePlainRoute, setUsePlainRoute] = useState(false);
+  const [simulateKeyMismatch, setSimulateKeyMismatch] = useState(false);
   const [clockTampered, setClockTampered] = useState(false);
   const [localToken, setLocalToken] = useState<string | null>(null);
   const [decodedPayload, setDecodedPayload] = useState<Record<string, unknown> | null>(null);
   const [signatureValid, setSignatureValid] = useState<boolean | null>(null);
+  const [keyMismatchDetected, setKeyMismatchDetected] = useState(false);
   const [phoneStatusMsg, setPhoneStatusMsg] = useState<string>(
     'آماده تست: روی دکمه‌های شبیه‌ساز گوشی کلیک کنید.'
   );
   const [licenseInput, setLicenseInput] = useState(state.licenses[0]?.licenseKey ?? 'ELM-9F4A-22C1-88B0-3E19');
   const [showFloatingPromo, setShowFloatingPromo] = useState(false);
-  const [promoData, setPromoData] = useState<{ html: string; ctaLabel: string; purchaseUrl: string } | null>(null);
+  const [promoData, setPromoData] = useState<{
+    html: string;
+    ctaLabel: string;
+    purchaseUrl: string;
+    promoUrl: string;
+  } | null>(null);
 
-  const inspectToken = async (token: string) => {
-    const res = await fetch('/api/sim/v1/token/inspect', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ app_slug: activeApp.slug, token }),
-    });
-    const data = (await res.json()) as { valid: boolean; payload: Record<string, unknown> | null };
+  useEffect(() => {
+    const onMsg = (ev: MessageEvent) => {
+      if (ev.data === 'elm_close_promo') {
+        setShowFloatingPromo(false);
+      }
+    };
+    window.addEventListener('message', onMsg);
+    return () => window.removeEventListener('message', onMsg);
+  }, []);
+
+  const inspectToken = async (token: string, forceMismatch = simulateKeyMismatch) => {
+    const fakeHex = '0000000000000000000000000000000000000000000000000000000000000001';
+    const data = await fetchJson<{ valid: boolean; keyMismatch?: boolean; payload: Record<string, unknown> | null }>(
+      '/api/sim/v1/token/inspect',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          app_slug: activeApp.slug,
+          token,
+          public_key_hex_override: forceMismatch ? fakeHex : undefined,
+        }),
+      }
+    );
     setSignatureValid(data.valid);
+    setKeyMismatchDetected(Boolean(data.keyMismatch));
     setDecodedPayload(data.payload);
+    if (data.keyMismatch) {
+      setPhoneStatusMsg(
+        `عدم تطابق کلید عمومی Ed25519 (${activeApp.slug}): توکن در سرور امضا شد اما با Public Key Hex فعلی کلاینت همخوانی ندارد. کلید Hex جدید افزونه را در EpicLicenseClient جایگزین کنید.`
+      );
+    }
   };
 
   const handleActivateTrial = async () => {
@@ -52,23 +86,29 @@ export const PhoneApiLabView: React.FC<Props> = ({ state, onRefreshState }) => {
       setPhoneStatusMsg('خطای شبکه: برای شروع اولیه Trial اتصال کوتاه اینترنت مورد نیاز است.');
       return;
     }
-    const res = await fetch('/api/sim/v1/trial/activate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        app_slug: activeApp.slug,
-        hardware_hash: hardwareHash,
-        device_model: 'Pixel 9 Pro',
-        os_version: 'Android 15',
-      }),
-    });
-    const data = (await res.json()) as { ok: boolean; token?: string; message?: string; error?: string };
+    const data = await fetchJson<{ ok: boolean; token?: string; message?: string; error?: string }>(
+      '/api/sim/v1/trial/activate',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          app_slug: activeApp.slug,
+          hardware_hash: hardwareHash,
+          device_model: 'Pixel 9 Pro',
+          os_version: 'Android 15',
+          plain_route: usePlainRoute,
+          is_test_sandbox: true,
+        }),
+      }
+    );
     await onRefreshState();
     if (data.ok && data.token) {
       setLocalToken(data.token);
       setClockTampered(false);
       await inspectToken(data.token);
-      setPhoneStatusMsg(data.message || 'دوره Trial فعال شد و توکن امضاشده در حافظه رمزنگاری‌شده ذخیره گردید.');
+      if (!simulateKeyMismatch) {
+        setPhoneStatusMsg(data.message || 'دوره Trial فعال شد و توکن امضاشده در حافظه رمزنگاری‌شده ذخیره گردید.');
+      }
     } else {
       setPhoneStatusMsg(data.message || data.error || 'دوره آزمایشی مسدود یا منقضی شده است.');
       await handleFetchPromo(true);
@@ -84,6 +124,7 @@ export const PhoneApiLabView: React.FC<Props> = ({ state, onRefreshState }) => {
     setLocalToken(null);
     setDecodedPayload(null);
     setSignatureValid(null);
+    setKeyMismatchDetected(false);
     await onRefreshState();
     setPhoneStatusMsg('دوره Trial روی سرور منقضی شد. اکنون امکانات پولی قفل و بنر تبلیغاتی فعال است.');
     await handleFetchPromo(true);
@@ -93,6 +134,7 @@ export const PhoneApiLabView: React.FC<Props> = ({ state, onRefreshState }) => {
     setLocalToken(null);
     setDecodedPayload(null);
     setSignatureValid(null);
+    setKeyMismatchDetected(false);
     setClockTampered(false);
     setPhoneStatusMsg('حافظه گوشی پاک شد (شبیه‌سازی حذف و نصب مجدد). حالا دکمه Trial را بزنید تا کنترل سرور را ببینید.');
   };
@@ -103,24 +145,30 @@ export const PhoneApiLabView: React.FC<Props> = ({ state, onRefreshState }) => {
       setPhoneStatusMsg('در حالت کاملاً آفلاین، فعال‌سازی کلید جدید ممکن نیست؛ فقط توکن ذخیره‌شده قبلی بررسی می‌شود.');
       return;
     }
-    const res = await fetch('/api/sim/v1/license/activate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        app_slug: activeApp.slug,
-        license_key: licenseInput,
-        hardware_hash: hardwareHash,
-        device_model: 'Pixel 9 Pro',
-      }),
-    });
-    const data = (await res.json()) as { ok: boolean; token?: string; error?: string };
+    const data = await fetchJson<{ ok: boolean; token?: string; error?: string }>(
+      '/api/sim/v1/license/activate',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          app_slug: activeApp.slug,
+          license_key: licenseInput,
+          hardware_hash: hardwareHash,
+          device_model: 'Pixel 9 Pro',
+          os_version: 'Android 15',
+          plain_route: usePlainRoute,
+        }),
+      }
+    );
     await onRefreshState();
     if (data.ok && data.token) {
       setLocalToken(data.token);
       setClockTampered(false);
       setShowFloatingPromo(false);
       await inspectToken(data.token);
-      setPhoneStatusMsg('کلید لایسنس تایید و با امضای Ed25519 روی گوشی ذخیره شد.');
+      if (!simulateKeyMismatch) {
+        setPhoneStatusMsg('کلید لایسنس تایید و با امضای Ed25519 روی گوشی ذخیره شد.');
+      }
     } else {
       setPhoneStatusMsg(`خطا در فعال‌سازی: ${data.error || 'کلید نامعتبر است'}`);
     }
@@ -136,33 +184,46 @@ export const PhoneApiLabView: React.FC<Props> = ({ state, onRefreshState }) => {
       return;
     }
     await inspectToken(localToken);
-    setPhoneStatusMsg(
-      isOffline
-        ? 'تایید آفلاین موفق: امضای دیجیتال Ed25519 بدون نیاز به اینترنت معتبر است (در محدوده پنجره همگام‌سازی).'
-        : 'تایید آنلاین و همگام‌سازی دوره‌ای با سرور انجام شد.'
-    );
+    if (!simulateKeyMismatch) {
+      setPhoneStatusMsg(
+        isOffline
+          ? 'تایید آفلاین موفق: امضای دیجیتال Ed25519 بدون نیاز به اینترنت معتبر است (در محدوده پنجره همگام‌سازی).'
+          : 'تایید آنلاین و همگام‌سازی دوره‌ای با سرور انجام شد.'
+      );
+    }
   };
 
   const handleFetchPromo = async (openModal = true) => {
-    const res = await fetch(`/api/sim/v1/promo?app_slug=${encodeURIComponent(activeApp.slug)}`);
-    const data = (await res.json()) as {
+    const data = await fetchJson<{
       ok: boolean;
       html: string;
       cta_label: string;
       purchase_url: string;
-    };
+      promo_url: string;
+    }>(`/api/sim/v1/promo?app_slug=${encodeURIComponent(activeApp.slug)}&plain_route=${usePlainRoute ? '1' : '0'}`);
     await onRefreshState();
     if (data.ok) {
       setPromoData({
         html: data.html,
         ctaLabel: data.cta_label,
         purchaseUrl: data.purchase_url,
+        promoUrl: data.promo_url,
       });
       if (openModal) setShowFloatingPromo(true);
     }
   };
 
-  const isUnlocked = Boolean(localToken) && !clockTampered && signatureValid !== false;
+  const handleClearSandbox = async () => {
+    await fetch('/api/sim/clear-sandbox', { method: 'POST' });
+    setLocalToken(null);
+    setDecodedPayload(null);
+    setSignatureValid(null);
+    setKeyMismatchDetected(false);
+    await onRefreshState();
+    setPhoneStatusMsg('رکوردهای آزمایشی شبیه‌ساز (is_test_sandbox) پاکسازی شدند.');
+  };
+
+  const isUnlocked = Boolean(localToken) && !clockTampered && signatureValid === true;
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
@@ -213,36 +274,75 @@ export const PhoneApiLabView: React.FC<Props> = ({ state, onRefreshState }) => {
             <button
               type="button"
               onClick={() => setIsOffline((v) => !v)}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border ${
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border ${
                 isOffline
                   ? 'bg-amber-50 border-amber-300 text-amber-900'
                   : 'bg-slate-50 border-slate-200 text-slate-700'
               }`}
             >
               {isOffline ? <WifiOff className="w-3.5 h-3.5" /> : <Wifi className="w-3.5 h-3.5" />}
-              <span>{isOffline ? 'اینترنت قطع (Offline)' : 'اینترنت متصل'}</span>
+              <span>{isOffline ? 'آفلاین' : 'آنلاین'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setUsePlainRoute((v) => !v)}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border ${
+                usePlainRoute
+                  ? 'bg-sky-50 border-sky-300 text-sky-900'
+                  : 'bg-slate-50 border-slate-200 text-slate-700'
+              }`}
+            >
+              <span className="font-mono">{usePlainRoute ? '?rest_route=' : '/wp-json/'}</span>
             </button>
 
             <button
               type="button"
               onClick={() => setClockTampered((v) => !v)}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border ${
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border ${
                 clockTampered
                   ? 'bg-red-50 border-red-300 text-red-900'
                   : 'bg-slate-50 border-slate-200 text-slate-700'
               }`}
             >
               <Clock className="w-3.5 h-3.5" />
-              <span>{clockTampered ? 'ساعت دستکاری شده' : 'تست دستکاری ساعت'}</span>
+              <span>{clockTampered ? 'ساعت دستکاری‌شده' : 'تست ساعت'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                const next = !simulateKeyMismatch;
+                setSimulateKeyMismatch(next);
+                if (localToken) void inspectToken(localToken, next);
+              }}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border ${
+                simulateKeyMismatch
+                  ? 'bg-red-50 border-red-300 text-red-900'
+                  : 'bg-slate-50 border-slate-200 text-slate-700'
+              }`}
+            >
+              <AlertTriangle className="w-3.5 h-3.5" />
+              <span>شبیه‌سازی مغایرت کلید</span>
             </button>
 
             <button
               type="button"
               onClick={handleOfflineVerify}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-200 bg-white text-slate-800 hover:bg-slate-50"
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border border-slate-200 bg-white text-slate-800 hover:bg-slate-50"
             >
               <RefreshCw className="w-3.5 h-3.5" />
-              <span>بررسی محلی توکن</span>
+              <span>بررسی محلی</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleClearSandbox}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+              title="حذف رکوردهای آزمایشی شبیه‌ساز"
+            >
+              <Eraser className="w-3.5 h-3.5" />
+              <span>پاکسازی تست‌ها</span>
             </button>
           </div>
         </div>
@@ -257,13 +357,19 @@ export const PhoneApiLabView: React.FC<Props> = ({ state, onRefreshState }) => {
                 <span className="font-medium truncate max-w-[160px]">{activeApp.name}</span>
               </div>
               <span className={isUnlocked ? 'text-emerald-400' : 'text-amber-300'}>
-                {clockTampered ? 'تقلب ساعت' : isUnlocked ? 'فعال' : 'محدود'}
+                {keyMismatchDetected ? 'مغایرت کلید' : clockTampered ? 'تقلب ساعت' : isUnlocked ? 'فعال' : 'محدود'}
               </span>
             </div>
 
             {/* Phone Body */}
             <div className="p-4 flex-1 space-y-3 overflow-y-auto">
-              <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-700 leading-relaxed">
+              <div
+                className={`p-2.5 rounded-lg border text-xs leading-relaxed ${
+                  keyMismatchDetected
+                    ? 'bg-red-50 border-red-200 text-red-900'
+                    : 'bg-slate-50 border-slate-200 text-slate-700'
+                }`}
+              >
                 {phoneStatusMsg}
               </div>
 
@@ -311,7 +417,7 @@ export const PhoneApiLabView: React.FC<Props> = ({ state, onRefreshState }) => {
                     type="button"
                     onClick={() => {
                       if (!isUnlocked) {
-                        setPhoneStatusMsg(`بخش «${feat}» قفل است. بنر تبلیغاتی خرید لایسنس نمایش داده شد.`);
+                        setPhoneStatusMsg(`بخش «${feat}» قفل است. صفحه تبلیغاتی خرید لایسنس نمایش داده شد.`);
                         void handleFetchPromo(true);
                       } else {
                         setPhoneStatusMsg(`بخش «${feat}» با موفقیت باز شد.`);
@@ -358,38 +464,20 @@ export const PhoneApiLabView: React.FC<Props> = ({ state, onRefreshState }) => {
                   onClick={() => handleFetchPromo(true)}
                   className="w-full py-1.5 text-xs font-medium text-sky-900 bg-sky-50 border border-sky-200 rounded-lg hover:bg-sky-100"
                 >
-                  دریافت کادر تبلیغاتی HTML از سرور
+                  باز کردن صفحه تبلیغاتی CPT در WebView گوشی
                 </button>
               </form>
             </div>
 
-            {/* Sandboxed Floating HTML Promo Modal inside Phone */}
+            {/* Sandboxed CPT WebView Promo Modal inside Phone */}
             {showFloatingPromo && promoData && (
-              <div className="absolute inset-0 bg-slate-950/60 p-4 flex items-center justify-center z-20">
-                <div className="bg-white rounded-xl w-full p-3.5 shadow-lg space-y-3 border border-slate-200">
+              <div className="absolute inset-0 bg-slate-950/60 p-3 flex items-center justify-center z-20">
+                <div className="bg-white rounded-xl w-full overflow-hidden shadow-lg border border-slate-200">
                   <iframe
-                    title="Promo Preview"
-                    sandbox=""
-                    srcDoc={`<!doctype html><html dir="rtl" lang="fa"><body style="margin:0;padding:4px;">${promoData.html}</body></html>`}
-                    className="w-full h-44 border-0 rounded"
+                    title="Promo CPT WebView"
+                    src={promoData.promoUrl}
+                    className="w-full h-[380px] border-0"
                   />
-                  <div className="flex flex-col gap-2">
-                    <a
-                      href={promoData.purchaseUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="w-full py-2 px-3 text-xs font-medium text-center bg-sky-800 text-white rounded-lg hover:bg-sky-900"
-                    >
-                      {promoData.ctaLabel}
-                    </a>
-                    <button
-                      type="button"
-                      onClick={() => setShowFloatingPromo(false)}
-                      className="w-full py-1.5 text-xs text-slate-600 hover:text-slate-900"
-                    >
-                      بستن کادر تبلیغاتی
-                    </button>
-                  </div>
                 </div>
               </div>
             )}
@@ -413,7 +501,11 @@ export const PhoneApiLabView: React.FC<Props> = ({ state, onRefreshState }) => {
                   signatureValid ? 'text-emerald-700' : 'text-red-700'
                 }`}
               >
-                {signatureValid ? 'امضای دیجیتال معتبر (Verified)' : 'امضا نامعتبر'}
+                {signatureValid
+                  ? 'امضای دیجیتال معتبر (Verified)'
+                  : keyMismatchDetected
+                  ? 'عدم تطابق کلید عمومی Hex'
+                  : 'امضا نامعتبر'}
               </span>
             )}
           </div>
@@ -451,7 +543,7 @@ export const PhoneApiLabView: React.FC<Props> = ({ state, onRefreshState }) => {
         {/* Live API Exchange Console */}
         <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-3">
           <h3 className="text-sm font-semibold text-slate-900">
-            گزارش زنده درخواست‌های REST API (/wp-json/elm/v1/*)
+            گزارش زنده درخواست‌های REST API (/wp-json/elm/v1/* و /?rest_route=)
           </h3>
           {state.apiLogs.length === 0 ? (
             <div className="p-5 text-center bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-500">

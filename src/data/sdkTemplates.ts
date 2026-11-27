@@ -16,6 +16,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.os.Build
 import android.provider.Settings
+import android.webkit.JavascriptInterface
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import net.i2p.crypto.eddsa.EdDSAEngine
@@ -28,21 +29,31 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.security.MessageDigest
-import java.security.Signature
 import java.time.Instant
 import java.util.Base64
 
 data class LicenseVerificationResult(
     val isAuthorized: Boolean,
-    val mode: String, // "trial" | "license" | "locked" | "clock_tampered"
+    val mode: String, // "trial" | "license" | "locked" | "clock_tampered" | "key_mismatch"
     val expiresAtUtc: String?,
     val requiresOnlineSync: Boolean,
     val message: String
 )
 
+/**
+ * WebView JS Bridge for CPT Promo URLs (/elm-promo/{slug}/)
+ * Attach via: webView.addJavascriptInterface(PromoAndroidBridge { dialog.dismiss() }, "AndroidBridge")
+ */
+class PromoAndroidBridge(private val onClose: () -> Unit) {
+    @JavascriptInterface
+    fun closePromo() {
+        onClose()
+    }
+}
+
 class EpicLicenseClient(
     private val context: Context,
-    private val baseUrl: String = "https://${storeDomain}/wp-json/elm/v1",
+    private val siteRootUrl: String = "https://${storeDomain}",
     private val appSlug: String = "${appSlug}",
     private val publicKeyHex: String = "${publicKeyHex}"
 ) {
@@ -68,6 +79,55 @@ class EpicLicenseClient(
         return digest.joinToString("") { "%02x".format(it) }
     }
 
+    /**
+     * Automatically tries /wp-json/elm/v1/{route} first and falls back to
+     * /?rest_route=/elm/v1/{route} if WordPress uses Plain Permalinks or returns HTML (!DOCTYPE).
+     * Persists working route mode in EncryptedSharedPreferences.
+     */
+    private fun executeJsonRequest(
+        route: String,
+        method: String = "POST",
+        bodyJson: JSONObject? = null
+    ): JSONObject {
+        val root = siteRootUrl.trimEnd('/')
+        val preferPlain = prefs.getBoolean("use_plain_rest_route", false)
+        val candidates = if (preferPlain) {
+            listOf("$root/?rest_route=/elm/v1/$route", "$root/wp-json/elm/v1/$route")
+        } else {
+            listOf("$root/wp-json/elm/v1/$route", "$root/?rest_route=/elm/v1/$route")
+        }
+
+        var lastError = "Unable to connect to WordPress REST API"
+        for ((idx, targetUrl) in candidates.withIndex()) {
+            val builder = Request.Builder()
+                .url(targetUrl)
+                .header("Accept", "application/json")
+            if (method == "POST") {
+                val payload = (bodyJson ?: JSONObject()).toString()
+                builder.post(payload.toRequestBody("application/json; charset=utf-8".toMediaType()))
+            } else {
+                builder.get()
+            }
+
+            client.newCall(builder.build()).execute().use { resp ->
+                val raw = (resp.body?.string() ?: "").trimStart()
+                // Guard against WordPress 404/maintenance HTML instead of crashing JSONObject("<!DOCTYPE ...")
+                if (raw.startsWith("<") || raw.contains("<!DOCTYPE", ignoreCase = true)) {
+                    lastError = "Server returned HTML instead of JSON at $targetUrl (Plain Permalink or WAF block)."
+                    if (idx == 0) continue else error(lastError)
+                }
+                val json = JSONObject(raw.ifEmpty { "{}" })
+                val usedPlain = targetUrl.contains("rest_route=")
+                prefs.edit().putBoolean("use_plain_rest_route", usedPlain).apply()
+                if (!resp.isSuccessful || !json.optBoolean("ok", true)) {
+                    error(json.optString("message", json.optString("error", "HTTP \${resp.code}")))
+                }
+                return json
+            }
+        }
+        error(lastError)
+    }
+
     fun activateTrialOnServer(): Result<JSONObject> = runCatching {
         val body = JSONObject().apply {
             put("app_slug", appSlug)
@@ -75,18 +135,9 @@ class EpicLicenseClient(
             put("device_model", "\${Build.MANUFACTURER} \${Build.MODEL}")
             put("os_version", "Android \${Build.VERSION.RELEASE}")
         }
-        val req = Request.Builder()
-            .url("$baseUrl/trial/activate")
-            .post(body.toString().toRequestBody("application/json".toMediaType()))
-            .build()
-        client.newCall(req).execute().use { resp ->
-            val json = JSONObject(resp.body?.string() ?: "{}")
-            if (!resp.isSuccessful || !json.optBoolean("ok")) {
-                error(json.optString("message", json.optString("error", "Trial failed")))
-            }
-            saveSignedToken(json.getString("token"))
-            json
-        }
+        val json = executeJsonRequest("trial/activate", "POST", body)
+        saveSignedToken(json.getString("token"), json.optString("public_key_hex", ""))
+        json
     }
 
     fun activateLicenseKey(licenseKey: String): Result<JSONObject> = runCatching {
@@ -95,30 +146,19 @@ class EpicLicenseClient(
             put("license_key", licenseKey.trim())
             put("hardware_hash", getDeviceFingerprint())
             put("device_model", "\${Build.MANUFACTURER} \${Build.MODEL}")
+            put("os_version", "Android \${Build.VERSION.RELEASE}")
         }
-        val req = Request.Builder()
-            .url("$baseUrl/license/activate")
-            .post(body.toString().toRequestBody("application/json".toMediaType()))
-            .build()
-        client.newCall(req).execute().use { resp ->
-            val json = JSONObject(resp.body?.string() ?: "{}")
-            if (!resp.isSuccessful || !json.optBoolean("ok")) {
-                error(json.optString("error", "Activation failed"))
-            }
-            saveSignedToken(json.getString("token"))
-            json
-        }
+        val json = executeJsonRequest("license/activate", "POST", body)
+        saveSignedToken(json.getString("token"), json.optString("public_key_hex", ""))
+        json
     }
 
-    fun fetchPromoOfferHtml(): JSONObject? = runCatching {
-        val req = Request.Builder().url("$baseUrl/promo?app_slug=$appSlug").get().build()
-        client.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) null else JSONObject(resp.body?.string() ?: "{}")
-        }
+    fun fetchPromoOffer(): JSONObject? = runCatching {
+        executeJsonRequest("promo?app_slug=$appSlug", "GET", null)
     }.getOrNull()
 
     /**
-     * Offline-first verification with Ed25519 signature + clock rollback protection.
+     * Offline-first verification with Ed25519 signature, explicit key-mismatch warning, & clock rollback protection.
      */
     fun verifyLocallyOffline(): LicenseVerificationResult {
         val token = prefs.getString("signed_token", null)
@@ -130,14 +170,23 @@ class EpicLicenseClient(
         val payloadBytes = Base64.getUrlDecoder().decode(parts[0])
         val sigBytes = Base64.getUrlDecoder().decode(parts[1])
 
-        // Verify Ed25519 signature against embedded server public key
+        // Verify Ed25519 signature against embedded 64-char HEX public key
+        val cleanHex = publicKeyHex.trim()
+        require(cleanHex.length == 64) { "Invalid Ed25519 publicKeyHex length (expected 64 hex chars)" }
         val spec = EdDSANamedCurveTable.getByName("Ed25519")
-        val pubKey = EdDSAPublicKey(EdDSAPublicKeySpec(hexToBytes(publicKeyHex), spec))
+        val pubKey = EdDSAPublicKey(EdDSAPublicKeySpec(hexToBytes(cleanHex), spec))
         val verifier = EdDSAEngine(MessageDigest.getInstance(spec.hashAlgorithm))
         verifier.initVerify(pubKey)
         verifier.update(parts[0].toByteArray(Charsets.UTF_8))
+
         if (!verifier.verify(sigBytes)) {
-            return LicenseVerificationResult(false, "locked", null, true, "Invalid cryptographic signature")
+            val serverHex = prefs.getString("last_server_pub_hex", "") ?: ""
+            val msg = if (serverHex.isNotEmpty() && !serverHex.equals(cleanHex, ignoreCase = true)) {
+                "عدم تطابق کلید عمومی Ed25519: کلید سرور با publicKeyHex داخل EpicLicenseClient همخوانی ندارد."
+            } else {
+                "Invalid cryptographic Ed25519 signature"
+            }
+            return LicenseVerificationResult(false, "key_mismatch", null, true, msg)
         }
 
         val payload = JSONObject(String(payloadBytes, Charsets.UTF_8))
@@ -170,9 +219,10 @@ class EpicLicenseClient(
         return LicenseVerificationResult(true, payload.optString("type", "license"), expStr, false, "Verified offline")
     }
 
-    private fun saveSignedToken(token: String) {
+    private fun saveSignedToken(token: String, serverPubHex: String) {
         prefs.edit()
             .putString("signed_token", token)
+            .putString("last_server_pub_hex", serverPubHex)
             .putLong("last_monotonic_epoch", Instant.now().epochSecond)
             .apply()
     }
@@ -193,7 +243,22 @@ export interface ElmTokenPayload {
   offline_grace_days: number;
 }
 
-const API_BASE = 'https://${storeDomain}/wp-json/elm/v1';
+const SITE_ROOT = 'https://${storeDomain}';
+
+async function fetchElmJson(route: string, options?: RequestInit) {
+  const urls = [\`\${SITE_ROOT}/wp-json/elm/v1/\${route}\`, \`\${SITE_ROOT}/?rest_route=/elm/v1/\${route}\`];
+  for (const url of urls) {
+    const res = await fetch(url, {
+      ...options,
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...(options?.headers || {}) },
+    });
+    const text = await res.text();
+    if (!text.trimStart().startsWith('<')) {
+      return JSON.parse(text);
+    }
+  }
+  throw new Error('WordPress REST endpoint returned HTML instead of JSON.');
+}
 
 export async function getBrowserFingerprint(): Promise<string> {
   const raw = [
@@ -208,17 +273,14 @@ export async function getBrowserFingerprint(): Promise<string> {
 
 export async function activateLicense(licenseKey: string) {
   const hardware_hash = await getBrowserFingerprint();
-  const res = await fetch(\`\${API_BASE}/license/activate\`, {
+  return fetchElmJson('license/activate', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ app_slug: '${appSlug}', license_key: licenseKey, hardware_hash }),
   });
-  return res.json();
 }
 
 export async function fetchPromoOffer() {
-  const res = await fetch(\`\${API_BASE}/promo?app_slug=${appSlug}\`);
-  return res.json();
+  return fetchElmJson(\`promo?app_slug=${appSlug}\`, { method: 'GET' });
 }`;
 }
 
@@ -230,15 +292,16 @@ export function getAiStudioMasterPrompt(storeDomain: string): string {
    - سوال ۱: روش درآمدزایی این پروژه کدام است؟ (روش اول: قفل بودن بخش‌های پولی از ابتدا | روش دوم: دوره Trial رایگان کامل با کنترل سرور و سپس قفل شدن امکانات)
    - سوال ۲: دقیقاً کدام صفحات، دکمه‌ها یا ماژول‌های این پروژه باید در حالت بدون لایسنس محدود شوند؟ (نام دقیق کامپوننت‌ها/اکتیویتی‌ها مشخص شود)
    - سوال ۳: مدت دوره Trial چند روز است و پنجره مجاز کارکرد آفلاین (Offline Grace Days) بین هر همگام‌سازی چقدر باشد؟
-   - سوال ۴: کادر تبلیغاتی HTML دریافتی از سرور در چه زمانی نمایش داده شود؟ (بازه زمانی دوره‌ای مثل هر ۱۸۰ ثانیه، هنگام کلیک روی بخش قفل‌شده، یا هر دو)
-   - سوال ۵: آدرس دقیق محصول متغیر در ووکامرس (https://${storeDomain}/product/...) و شناسه یکتای اپلیکیشن (app_slug) چیست؟
+   - سوال ۴: کادر تبلیغاتی HTML دریافتی از سرور (یا آدرس سبک \`promo_url\` در WebView) در چه زمانی نمایش داده شود؟ (بازه زمانی دوره‌ای مثل هر ۱۸۰ ثانیه، هنگام کلیک روی بخش قفل‌شده، یا هر دو)
+   - سوال ۵: آدرس دقیق محصول متغیر در ووکامرس (https://${storeDomain}/product/...)، شناسه یکتای اپلیکیشن (\`app_slug\`) و کلید عمومی ۶۴ کاراکتری \`public_key_hex\` دریافتی از پیشخوان افزونه چیست؟
 
 ۲) پس از دریافت پاسخ، پیاده‌سازی زیر را با استاندارد کامل تولید کن:
-   - استفاده از مسیرهای REST استاندارد:
+   - استفاده از مسیرهای REST استاندارد با قابلیت Failover خودکار روی پیوند یکتای ساده (\`/?rest_route=/elm/v1/...\`) و گارد تشخیص خروجی HTML:
+     • GET  https://${storeDomain}/wp-json/elm/v1/app/handshake?app_slug={slug}
      • POST https://${storeDomain}/wp-json/elm/v1/trial/activate
      • POST https://${storeDomain}/wp-json/elm/v1/license/activate
      • POST https://${storeDomain}/wp-json/elm/v1/license/verify
      • GET  https://${storeDomain}/wp-json/elm/v1/promo?app_slug={slug}
-   - در اندروید (قابل کامپایل مستقیم در Android Studio): ساخت اثرانگشت سخت‌افزاری استاندارد (SHA-256 از ANDROID_ID + Build Specs)، ذخیره توکن امضاشده در EncryptedSharedPreferences، اعتبارسنجی امضای Ed25519 در حالت آفلاین، تشخیص دستکاری ساعت (Clock Rollback)، و نمایش تبلیغات HTML سرور در کادر Floating Dialog / WebView به همراه دکمه انتقال به صفحه خرید ووکامرس.
+   - در اندروید (قابل کامپایل مستقیم در Android Studio): ساخت اثرانگشت سخت‌افزاری استاندارد (SHA-256 از ANDROID_ID + Build Specs)، ذخیره توکن امضاشده در EncryptedSharedPreferences، اعتبارسنجی امضای Ed25519 با بررسی عدم تطابق کلید عمومی Hex، تشخیص دستکاری ساعت (Clock Rollback)، و نمایش تبلیغات HTML سرور (یا بارگذاری \`promo_url\` در WebView مجهز به \`AndroidBridge.closePromo()\`).
    - در پایان خروجی، فایل استاندارد \`elm-manifest.json\` را تولید کن تا توسعه‌دهنده با یک کلیک آن را در پلاگین Epic License Manager ایمپورت کرده و پکیج لایسنس و متغیرهای ووکامرس را متصل کند.`;
 }

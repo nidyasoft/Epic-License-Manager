@@ -4,9 +4,11 @@ import {
   buildCalendarPhp,
   buildCryptoPhp,
   buildMainPluginPhp,
+  buildUninstallPhp,
   type PluginBuildOptions,
 } from './core-php.js';
-import { buildRestApiPhp, buildWooCommercePhp } from './woo-api-php.js';
+import { buildCustomFieldsPhp } from './custom-fields-php.js';
+import { buildPromoCptPhp, buildRestApiPhp, buildWooCommercePhp } from './woo-api-php.js';
 import {
   buildAdminPhp,
   buildAssetsAndI18n,
@@ -20,8 +22,14 @@ export function generatePluginFiles(opts: PluginBuildOptions): PluginVirtualFile
     {
       path: 'epic-license-manager/epic-license-manager.php',
       language: 'php',
-      description: 'فایل اصلی افزونه (PHP 8.2+، سازگار با HPOS و ساخت جداول دیتابیس)',
+      description: 'فایل اصلی افزونه (PHP 8.2+، سازگار با HPOS، نصب/حذف خودکار پچ mu-plugins)',
       content: buildMainPluginPhp(opts),
+    },
+    {
+      path: 'epic-license-manager/uninstall.php',
+      language: 'php',
+      description: 'پاکسازی خودکار فایل پچ mu-plugins هنگام حذف افزونه از وردپرس',
+      content: buildUninstallPhp(),
     },
     {
       path: 'epic-license-manager/includes/class-elm-calendar.php',
@@ -32,43 +40,55 @@ export function generatePluginFiles(opts: PluginBuildOptions): PluginVirtualFile
     {
       path: 'epic-license-manager/includes/class-elm-crypto.php',
       language: 'php',
-      description: 'موتور امضای آفلاین Ed25519 (libsodium) و HMAC-SHA256',
+      description: 'موتور Ed25519 (Sodium) با خروجی همزمان Hex/Base64، ویرایش کلید و تست امضا',
       content: buildCryptoPhp(),
+    },
+    {
+      path: 'epic-license-manager/includes/class-elm-custom-fields.php',
+      language: 'php',
+      description: 'سیستم فیلدساز سفارشی استاندارد وردپرس با شروط نمایش و تزریق خودکار قالب',
+      content: buildCustomFieldsPhp(),
+    },
+    {
+      path: 'epic-license-manager/includes/class-elm-promo-cpt.php',
+      language: 'php',
+      description: 'پست‌تایپ تبلیغات موبایل با لینک اختصاصی و صفحه سبک بدون هدر/فوتر + پل اپ',
+      content: buildPromoCptPhp(),
     },
     {
       path: 'epic-license-manager/includes/class-elm-woocommerce.php',
       language: 'php',
-      description: 'اتصال ووکامرس: اجبار ثبت‌نام، نگاشت باندل ۱ تا ۱۰ لایسنس و صدور با وضعیت سفارش',
+      description: 'اتصال ووکامرس: تسویه‌حساب شرطی فقط برای سبد لایسنس‌دار و نگاشت ۱ تا ۱۰ کلید',
       content: buildWooCommercePhp(),
     },
     {
       path: 'epic-license-manager/includes/class-elm-rest-api.php',
       language: 'php',
-      description: 'نقاط پایانی REST API برای اپلیکیشن اندروید و وب (/wp-json/elm/v1/*)',
+      description: 'نقاط پایانی REST API با روتر پیوندیکتای ساده و محافظ خروجی JSON',
       content: buildRestApiPhp(),
     },
     {
       path: 'epic-license-manager/includes/class-elm-reports.php',
       language: 'php',
-      description: 'گزارش‌ساز پویا با پشتیبانی از فیلدهای ACF مشتریان و خروجی اکسل',
+      description: 'گزارش جامع دستگاه/سفارش/خطا/ACF با خروجی واقعی اکسل XLSX و CSV سمی‌کالنی',
       content: buildReportsPhp(),
     },
     {
       path: 'epic-license-manager/includes/class-elm-admin.php',
       language: 'php',
-      description: 'پنل مدیریت وردپرس (اپلیکیشن‌ها، تقویم سه‌گانه، گزارش و تبلیغات)',
+      description: 'پیشخوان کامل وردپرس شامل شبیه‌ساز گوشی، فرم بصری تبلیغات و کدساز واقعی',
       content: buildAdminPhp(),
     },
     {
       path: 'epic-license-manager/assets/admin.css',
       language: 'css',
-      description: 'استایل رابط مدیریت وردپرس',
+      description: 'استایل کپسوله‌شده پیشخوان مدرن وردپرس',
       content: adminCss,
     },
     {
       path: 'epic-license-manager/assets/admin.js',
       language: 'js',
-      description: 'اسکریپت رابط مدیریت وردپرس',
+      description: 'اسکریپت تست زنده امضا و شبیه‌ساز گوشی داخل پیشخوان وردپرس',
       content: adminJs,
     },
     {
@@ -86,7 +106,7 @@ export function generatePluginFiles(opts: PluginBuildOptions): PluginVirtualFile
     {
       path: 'epic-license-manager/docs/AI_STUDIO_BLUEPRINT.md',
       language: 'md',
-      description: 'راهنمای استاندارد یکپارچه‌سازی برای Google AI Studio و توسعه‌دهندگان',
+      description: 'راهنمای همگام‌سازی کلید Ed25519 و رفع خطای پیوندیکتای ساده',
       content: aiBlueprintMd,
     },
   ];

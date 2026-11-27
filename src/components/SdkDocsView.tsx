@@ -23,7 +23,7 @@ export const SdkDocsView: React.FC<Props> = ({ state }) => {
 
   const manifestJson = JSON.stringify(
     {
-      schema_version: '1.0',
+      schema_version: '2.0',
       app_slug: app.slug,
       app_name: app.name,
       platform: app.platform,
@@ -31,10 +31,12 @@ export const SdkDocsView: React.FC<Props> = ({ state }) => {
       trial_days: app.trialDays,
       offline_grace_days: app.offlineGraceDays,
       api_base: `https://${domain}/wp-json/elm/v1`,
+      plain_permalink_fallback: `https://${domain}/?rest_route=/elm/v1`,
       purchase_url: app.purchaseUrl,
       gated_features: app.gatedFeatures,
       signing_alg: 'ed25519',
       public_key_hex: app.publicKeyHex,
+      public_key_b64: app.publicKeyBase64,
     },
     null,
     2
@@ -74,7 +76,7 @@ export const SdkDocsView: React.FC<Props> = ({ state }) => {
             }`}
           >
             <Code2 className="w-3.5 h-3.5" />
-            <span>اندروید (Kotlin / Gradle)</span>
+            <span>اندروید (Kotlin + Fallback)</span>
           </button>
           <button
             type="button"
@@ -120,7 +122,7 @@ export const SdkDocsView: React.FC<Props> = ({ state }) => {
                 پرامپت مرجع و پروتکل پرسش‌گری هوشمند برای Google AI Studio
               </h2>
               <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-                این دستورالعمل را در هر پروژه جدید اندروید یا وب به Google AI Studio بدهید تا ابتدا سوالات فنی مرتبط با همان پروژه را بپرسد، سپس کد کامل سازگار با Android Studio و پلاگین Epic License Manager را همراه با فایل elm-manifest.json تحویل دهد.
+                شامل پشتیبانی از `?rest_route=` روی پیوندیکتای ساده، گارد جلوگیری از خطای {'`<!DOCTYPE`'}، همگام‌سازی خودکار کلید ۶۴ کاراکتری Hex و `AndroidBridge.closePromo()`.
               </p>
             </div>
             <button
@@ -161,7 +163,7 @@ export const SdkDocsView: React.FC<Props> = ({ state }) => {
           <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
             <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
               <span className="text-xs font-semibold text-slate-900">
-                2. کلاینت کامل Kotlin (Ed25519 Offline + محافظ دستکاری ساعت + EncryptedSharedPreferences + Trial)
+                2. کلاینت کامل Kotlin (Failover پیوندیکتای ساده + گارد HTML + تشخیص مغایرت کلید Ed25519 + PromoAndroidBridge)
               </span>
               <button
                 type="button"
@@ -204,7 +206,7 @@ export const SdkDocsView: React.FC<Props> = ({ state }) => {
             <div>
               <div className="text-xs font-semibold text-slate-900">فایل قرارداد استاندارد elm-manifest.json</div>
               <div className="text-[11px] text-slate-500 mt-0.5">
-                این فایل ارتباط یکپارچه و بدون خطا میان اپلیکیشن و پلاگین وردپرس را برقرار می‌کند.
+                شامل `public_key_hex`، `public_key_b64` و مسیر `plain_permalink_fallback`.
               </div>
             </div>
             <button

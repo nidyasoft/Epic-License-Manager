@@ -1,6 +1,22 @@
 import React, { useState } from 'react';
-import { Check, Copy, Download, FileCode2, FolderOpen, Plus, Upload } from 'lucide-react';
+import {
+  Check,
+  Copy,
+  Download,
+  Edit3,
+  FileCode2,
+  FolderOpen,
+  KeyRound,
+  PauseCircle,
+  PlayCircle,
+  Plus,
+  RefreshCw,
+  ShieldCheck,
+  Upload,
+  X,
+} from 'lucide-react';
 import { formatCalendarDate } from '../shared/calendar.js';
+import { fetchJson } from '../shared/http.js';
 import type { ElmApp, OrderStatus, PluginVirtualFile, SimulatorState } from '../shared/types.js';
 
 interface Props {
@@ -18,6 +34,23 @@ interface Props {
     purchaseUrl: string;
     gatedFeatures: string[];
   }) => Promise<void>;
+  onUpdateApp: (
+    appId: string,
+    patch: {
+      name?: string;
+      platform?: 'android' | 'web' | 'cross_platform';
+      mode?: 'method1_gated' | 'method2_trial';
+      trialDays?: number;
+      offlineGraceDays?: number;
+      purchaseUrl?: string;
+      gatedFeatures?: string[];
+      isActive?: boolean;
+      regenerateKeys?: boolean;
+      customSeedHex?: string;
+      publicKeyHexOverride?: string;
+    }
+  ) => Promise<void>;
+  onToggleApp: (appId: string) => Promise<void>;
   onDownloadZip: () => void;
 }
 
@@ -27,6 +60,8 @@ export const PluginBuilderView: React.FC<Props> = ({
   lang,
   onSaveWooSettings,
   onCreateApp,
+  onUpdateApp,
+  onToggleApp,
   onDownloadZip,
 }) => {
   const [selectedFile, setSelectedFile] = useState<string>(files[0]?.path ?? '');
@@ -35,8 +70,9 @@ export const PluginBuilderView: React.FC<Props> = ({
   const [triggerStatuses, setTriggerStatuses] = useState<OrderStatus[]>(state.woocommerce.triggerStatuses);
   const [savingSettings, setSavingSettings] = useState(false);
 
-  // New App / Manifest Importer state
+  // Add / Edit App state
   const [showNewApp, setShowNewApp] = useState(false);
+  const [editingApp, setEditingApp] = useState<ElmApp | null>(null);
   const [manifestJson, setManifestJson] = useState('');
   const [appName, setAppName] = useState('');
   const [appSlug, setAppSlug] = useState('');
@@ -44,7 +80,18 @@ export const PluginBuilderView: React.FC<Props> = ({
   const [appMode, setAppMode] = useState<'method1_gated' | 'method2_trial'>('method2_trial');
   const [trialDays, setTrialDays] = useState(14);
   const [graceDays, setGraceDays] = useState(14);
+  const [purchaseUrl, setPurchaseUrl] = useState('');
   const [gatedText, setGatedText] = useState('خروجی اکسل پیشرفته، گزارش مالیاتی، اتصال ابری');
+  const [editSeedHex, setEditSeedHex] = useState('');
+  const [editPubHex, setEditPubHex] = useState('');
+
+  // Key & Live Signature Test Modal state
+  const [keyModalApp, setKeyModalApp] = useState<ElmApp | null>(null);
+  const [sigTestResult, setSigTestResult] = useState<{
+    token: string;
+    verifiedWithAppHex: boolean;
+    diagnosticMessage: string;
+  } | null>(null);
 
   const activeFile = files.find((f) => f.path === selectedFile) ?? files[0];
 
@@ -80,34 +127,84 @@ export const PluginBuilderView: React.FC<Props> = ({
       }
       if (typeof parsed.trial_days === 'number') setTrialDays(parsed.trial_days);
       if (typeof parsed.offline_grace_days === 'number') setGraceDays(parsed.offline_grace_days);
+      if (typeof parsed.purchase_url === 'string') setPurchaseUrl(parsed.purchase_url);
       if (Array.isArray(parsed.gated_features)) {
         setGatedText(parsed.gated_features.map(String).join('، '));
       }
     } catch {
-      // Ignore malformed JSON silently; form remains editable
+      // Ignore malformed JSON silently
     }
   };
 
-  const handleCreateAppSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!appName.trim() || !appSlug.trim()) return;
-    await onCreateApp({
-      slug: appSlug,
-      name: appName,
-      platform: appPlatform,
-      mode: appMode,
-      trialDays,
-      offlineGraceDays: graceDays,
-      purchaseUrl: `https://${storeDomain}/product/${appSlug.trim().toLowerCase()}`,
-      gatedFeatures: gatedText
-        .split(/[،,]/)
-        .map((s) => s.trim())
-        .filter(Boolean),
-    });
+  const startEditApp = (app: ElmApp) => {
+    setEditingApp(app);
+    setShowNewApp(true);
+    setAppName(app.name);
+    setAppSlug(app.slug);
+    setAppPlatform(app.platform);
+    setAppMode(app.mode);
+    setTrialDays(app.trialDays);
+    setGraceDays(app.offlineGraceDays);
+    setPurchaseUrl(app.purchaseUrl);
+    setGatedText(app.gatedFeatures.join('، '));
+    setEditSeedHex('');
+    setEditPubHex(app.publicKeyHex);
+  };
+
+  const resetAppForm = () => {
+    setEditingApp(null);
     setAppName('');
     setAppSlug('');
+    setPurchaseUrl('');
+    setEditSeedHex('');
+    setEditPubHex('');
     setManifestJson('');
     setShowNewApp(false);
+  };
+
+  const handleAppFormSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!appName.trim() || !appSlug.trim()) return;
+    const features = gatedText.split(/[،,]/).map((s) => s.trim()).filter(Boolean);
+
+    if (editingApp) {
+      await onUpdateApp(editingApp.id, {
+        name: appName,
+        platform: appPlatform,
+        mode: appMode,
+        trialDays,
+        offlineGraceDays: graceDays,
+        purchaseUrl: purchaseUrl.trim() || `https://${storeDomain}/product/${appSlug.trim().toLowerCase()}`,
+        gatedFeatures: features,
+        customSeedHex: editSeedHex.trim() || undefined,
+        publicKeyHexOverride: editPubHex.trim() !== editingApp.publicKeyHex ? editPubHex.trim() : undefined,
+      });
+    } else {
+      await onCreateApp({
+        slug: appSlug,
+        name: appName,
+        platform: appPlatform,
+        mode: appMode,
+        trialDays,
+        offlineGraceDays: graceDays,
+        purchaseUrl: purchaseUrl.trim() || `https://${storeDomain}/product/${appSlug.trim().toLowerCase()}`,
+        gatedFeatures: features,
+      });
+    }
+    resetAppForm();
+  };
+
+  const runLiveSignatureTest = async (app: ElmApp) => {
+    const res = await fetchJson<{
+      token: string;
+      verifiedWithAppHex: boolean;
+      diagnosticMessage: string;
+    }>(`/api/sim/apps/${app.id}/test-signature`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note: 'Admin Key Sync Diagnostic' }),
+    });
+    setSigTestResult(res);
   };
 
   const copyCode = async (text: string, key: string) => {
@@ -131,7 +228,7 @@ export const PluginBuilderView: React.FC<Props> = ({
             {state.licenses.length} <span className="text-sm font-medium text-emerald-700">/ {activeCount} فعال</span>
           </div>
           <div className="mt-1 text-xs text-slate-500">
-            {lang === 'fa' ? 'سازگار با WooCommerce HPOS و PHP 8.2+' : 'WooCommerce HPOS & PHP 8.2+ Ready'}
+            WooCommerce HPOS + PHP 8.2+ Sodium
           </div>
         </div>
 
@@ -141,7 +238,7 @@ export const PluginBuilderView: React.FC<Props> = ({
           </div>
           <div className="mt-2 text-2xl font-bold text-slate-900 tabular-nums">{state.apps.length}</div>
           <div className="mt-1 text-xs text-slate-500">
-            {lang === 'fa' ? 'امضای دیجیتال Ed25519 فعال' : 'Ed25519 Offline Token Signing'}
+            Ed25519 Hex & Base64 Key Sync
           </div>
         </div>
 
@@ -151,7 +248,7 @@ export const PluginBuilderView: React.FC<Props> = ({
           </div>
           <div className="mt-2 text-2xl font-bold text-amber-700 tabular-nums">{trialBlocked}</div>
           <div className="mt-1 text-xs text-slate-500">
-            {lang === 'fa' ? 'محافظت سخت‌افزاری سمت سرور' : 'Server Hardware Fingerprint Guard'}
+            پچ خودکار mu-plugins فعال
           </div>
         </div>
 
@@ -184,9 +281,7 @@ export const PluginBuilderView: React.FC<Props> = ({
                 {lang === 'fa' ? 'پیکربندی پایه پلاگین وردپرس و ووکامرس' : 'Core Plugin & WooCommerce Settings'}
               </h2>
               <p className="mt-1 text-xs text-slate-500 leading-relaxed">
-                {lang === 'fa'
-                  ? 'این مقادیر مستقیماً در فایل‌های PHP داخل بسته ZIP دانلودی اعمال می‌شوند.'
-                  : 'Values applied directly inside the generated downloadable WordPress plugin ZIP.'}
+                شامل نصب/حذف خودکار پچ پیوندیکتای ساده (`mu-plugins/elm-plain-permalink-fix.php`) و گارد JSON در هنگام نصب افزونه.
               </p>
             </div>
 
@@ -238,9 +333,7 @@ export const PluginBuilderView: React.FC<Props> = ({
               disabled={savingSettings}
               className="px-4 py-2 text-xs font-medium bg-slate-900 text-white rounded-lg hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0"
             >
-              {savingSettings
-                ? lang === 'fa' ? 'در حال ذخیره...' : 'Saving...'
-                : lang === 'fa' ? 'ذخیره و بروزرسانی ZIP' : 'Save & Update ZIP'}
+              {savingSettings ? 'در حال ذخیره...' : 'ذخیره و بروزرسانی ZIP'}
             </button>
             <button
               type="button"
@@ -248,71 +341,78 @@ export const PluginBuilderView: React.FC<Props> = ({
               className="inline-flex items-center gap-2 px-4 py-2 text-xs font-medium bg-sky-800 text-white rounded-lg hover:bg-sky-900 transition-colors whitespace-nowrap shrink-0"
             >
               <Download className="w-3.5 h-3.5" />
-              <span>{lang === 'fa' ? 'دانلود فایل ZIP پلاگین' : 'Download Plugin ZIP'}</span>
+              <span>دانلود فایل ZIP پلاگین (۱۵ فایل)</span>
             </button>
           </div>
         </form>
 
-        {/* Registered Apps + Quick Manifest Import */}
+        {/* Registered Apps + Edit / Key Sync */}
         <div className="lg:col-span-7 bg-white border border-slate-200 rounded-xl p-5 space-y-4">
           <div className="flex items-center justify-between gap-4">
             <div>
               <h2 className="text-base font-semibold text-slate-900">
-                {lang === 'fa' ? 'سیستم‌های لایسنس اپلیکیشن‌ها (Handshake)' : 'Registered Application Systems'}
+                {lang === 'fa' ? 'مدیریت اپلیکیشن‌ها و همگام‌سازی کلید Ed25519' : 'Registered Apps & Ed25519 Keys'}
               </h2>
               <p className="text-xs text-slate-500 mt-0.5">
-                {lang === 'fa'
-                  ? 'افزودن دستی یا ایمپورت مستقیم فایل elm-manifest.json تولیدشده توسط هوش مصنوعی'
-                  : 'Register manually or import elm-manifest.json generated by AI Studio'}
+                ویرایش کامل، توقف موقت بدون حذف لایسنس‌ها، نمایش همزمان Hex و Base64، و تست زنده امضا
               </p>
             </div>
             <button
               type="button"
-              onClick={() => setShowNewApp((v) => !v)}
+              onClick={() => {
+                if (showNewApp) resetAppForm();
+                else setShowNewApp(true);
+              }}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-slate-100 text-slate-800 rounded-lg hover:bg-slate-200 transition-colors whitespace-nowrap shrink-0"
             >
               <Plus className="w-3.5 h-3.5" />
-              <span>{showNewApp ? (lang === 'fa' ? 'بستن فرم' : 'Close') : lang === 'fa' ? 'افزودن / ایمپورت اپ' : 'Add / Import App'}</span>
+              <span>{showNewApp ? 'بستن فرم' : 'افزودن / ایمپورت اپ'}</span>
             </button>
           </div>
 
           {showNewApp && (
-            <form onSubmit={handleCreateAppSubmit} className="p-4 bg-slate-50 border border-slate-200 rounded-lg space-y-3">
-              <div className="flex flex-col sm:flex-row gap-2">
-                <textarea
-                  rows={2}
-                  dir="ltr"
-                  value={manifestJson}
-                  onChange={(e) => setManifestJson(e.target.value)}
-                  placeholder='{"app_slug":"shop-app","app_name":"فروشگاه من","license_mode":"method2_trial","trial_days":14}'
-                  className="flex-1 px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg bg-white"
-                />
-                <button
-                  type="button"
-                  onClick={handleImportManifest}
-                  className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium bg-white border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-100 whitespace-nowrap shrink-0"
-                >
-                  <Upload className="w-3.5 h-3.5" />
-                  <span>{lang === 'fa' ? 'خواندن Manifest' : 'Parse Manifest'}</span>
-                </button>
+            <form onSubmit={handleAppFormSubmit} className="p-4 bg-slate-50 border border-slate-200 rounded-lg space-y-3">
+              <div className="text-xs font-semibold text-slate-800">
+                {editingApp ? `ویرایش اپلیکیشن: ${editingApp.name}` : 'ثبت اپلیکیشن جدید یا ایمپورت elm-manifest.json'}
               </div>
+              {!editingApp && (
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <textarea
+                    rows={2}
+                    dir="ltr"
+                    value={manifestJson}
+                    onChange={(e) => setManifestJson(e.target.value)}
+                    placeholder='{"app_slug":"shop-app","app_name":"فروشگاه من","license_mode":"method2_trial","trial_days":14}'
+                    className="flex-1 px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg bg-white"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleImportManifest}
+                    className="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium bg-white border border-slate-300 text-slate-700 rounded-lg hover:bg-slate-100 whitespace-nowrap shrink-0"
+                  >
+                    <Upload className="w-3.5 h-3.5" />
+                    <span>خواندن Manifest</span>
+                  </button>
+                </div>
+              )}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <input
                   type="text"
                   required
                   value={appName}
                   onChange={(e) => setAppName(e.target.value)}
-                  placeholder={lang === 'fa' ? 'نام اپلیکیشن (مثلا: حسابدار همراه)' : 'App Name'}
+                  placeholder="نام اپلیکیشن"
                   className="px-3 py-2 text-xs border border-slate-300 rounded-lg bg-white"
                 />
                 <input
                   type="text"
                   required
+                  disabled={Boolean(editingApp)}
                   dir="ltr"
                   value={appSlug}
                   onChange={(e) => setAppSlug(e.target.value)}
                   placeholder="app-slug-name"
-                  className="px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg bg-white"
+                  className="px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg bg-white disabled:bg-slate-100"
                 />
                 <select
                   value={appPlatform}
@@ -355,47 +455,212 @@ export const PluginBuilderView: React.FC<Props> = ({
                 </div>
               </div>
               <input
+                type="url"
+                dir="ltr"
+                value={purchaseUrl}
+                onChange={(e) => setPurchaseUrl(e.target.value)}
+                placeholder={`https://${storeDomain}/product/...`}
+                className="w-full px-3 py-2 text-xs font-mono border border-slate-300 rounded-lg bg-white"
+              />
+              <input
                 type="text"
                 value={gatedText}
                 onChange={(e) => setGatedText(e.target.value)}
                 placeholder="بخش‌های محدودشده با ویرگول جدا شوند..."
                 className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg bg-white"
               />
-              <button
-                type="submit"
-                className="px-4 py-2 text-xs font-medium bg-sky-800 text-white rounded-lg hover:bg-sky-900"
-              >
-                {lang === 'fa' ? 'ثبت اپلیکیشن و تولید کلید Ed25519' : 'Register App & Generate Keys'}
-              </button>
+              {editingApp && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-2 border-t border-slate-200">
+                  <div>
+                    <label className="block text-[11px] text-slate-600 mb-1">کلید عمومی ۶۴ کاراکتری Hex (قابل ویرایش):</label>
+                    <input
+                      type="text"
+                      dir="ltr"
+                      value={editPubHex}
+                      onChange={(e) => setEditPubHex(e.target.value)}
+                      className="w-full px-2.5 py-1.5 text-[11px] font-mono border border-slate-300 rounded bg-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] text-slate-600 mb-1">یا وارد کردن Seed ۶۴ کاراکتری Hex برای جفت کلید جدید:</label>
+                    <input
+                      type="text"
+                      dir="ltr"
+                      value={editSeedHex}
+                      onChange={(e) => setEditSeedHex(e.target.value)}
+                      placeholder="اختیاری (64 کاراکتر Hex)"
+                      className="w-full px-2.5 py-1.5 text-[11px] font-mono border border-slate-300 rounded bg-white"
+                    />
+                  </div>
+                </div>
+              )}
+              <div className="flex items-center gap-2">
+                <button
+                  type="submit"
+                  className="px-4 py-2 text-xs font-medium bg-sky-800 text-white rounded-lg hover:bg-sky-900"
+                >
+                  {editingApp ? 'ذخیره تغییرات اپلیکیشن' : 'ثبت اپلیکیشن و تولید کلید Ed25519'}
+                </button>
+                {editingApp && (
+                  <button
+                    type="button"
+                    onClick={resetAppForm}
+                    className="px-3 py-2 text-xs border border-slate-300 rounded-lg bg-white text-slate-700"
+                  >
+                    انصراف
+                  </button>
+                )}
+              </div>
             </form>
           )}
 
           <div className="divide-y divide-slate-100">
             {state.apps.map((app) => (
-              <div key={app.id} className="py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div key={app.id} className="py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div>
-                  <div className="text-sm font-semibold text-slate-900">{app.name}</div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-semibold text-slate-900">{app.name}</span>
+                    <span className={`text-[11px] font-medium ${app.isActive ? 'text-emerald-700' : 'text-amber-700'}`}>
+                      {app.isActive ? 'فعال' : 'متوقف‌شده'}
+                    </span>
+                  </div>
                   <div className="mt-0.5 text-xs text-slate-500 flex flex-wrap items-center gap-2">
                     <span className="font-mono">{app.slug}</span>
                     <span aria-hidden="true">·</span>
                     <span>{app.mode === 'method2_trial' ? `روش ۲ (${app.trialDays} روز Trial)` : 'روش ۱ (محدودسازی مستقیم)'}</span>
                     <span aria-hidden="true">·</span>
-                    <span>همگام‌سازی آفلاین هر {app.offlineGraceDays} روز</span>
+                    <span>آفلاین {app.offlineGraceDays} روز</span>
                   </div>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => copyCode(app.publicKeyHex, app.id)}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono bg-slate-50 border border-slate-200 rounded-lg text-slate-700 hover:bg-slate-100 whitespace-nowrap shrink-0"
-                >
-                  {copiedPath === app.id ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
-                  <span>PubKey: {app.publicKeyHex.slice(0, 12)}...</span>
-                </button>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setKeyModalApp(app);
+                      setSigTestResult(null);
+                    }}
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg bg-slate-50 text-slate-800 hover:bg-slate-100"
+                  >
+                    <KeyRound className="w-3.5 h-3.5 text-sky-800" />
+                    <span>کلید و تست امضا</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => startEditApp(app)}
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg bg-white text-slate-700 hover:bg-slate-50"
+                  >
+                    <Edit3 className="w-3.5 h-3.5" />
+                    <span>ویرایش</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void onToggleApp(app.id)}
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg bg-white text-slate-700 hover:bg-slate-50"
+                    title={app.isActive ? 'توقف موقت بدون حذف لایسنس‌ها' : 'فعال‌سازی مجدد'}
+                  >
+                    {app.isActive ? <PauseCircle className="w-3.5 h-3.5 text-amber-700" /> : <PlayCircle className="w-3.5 h-3.5 text-emerald-700" />}
+                    <span>{app.isActive ? 'توقف' : 'فعال‌سازی'}</span>
+                  </button>
+                </div>
               </div>
             ))}
           </div>
         </div>
       </div>
+
+      {/* Key Sync & Live Signature Test Modal */}
+      {keyModalApp && (
+        <div className="fixed inset-0 bg-slate-950/60 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl border border-slate-200 max-w-2xl w-full p-5 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-sky-800" />
+                <h3 className="text-sm font-semibold text-slate-900">
+                  همگام‌سازی کلید عمومی Ed25519 و تست امضا — {keyModalApp.name}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setKeyModalApp(null)}
+                className="p-1 text-slate-400 hover:text-slate-700"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div>
+                <div className="font-medium text-slate-700 mb-1">کلید عمومی ۶۴ کاراکتری Hex (برای `EpicLicenseClient.kt`):</div>
+                <div className="flex items-center gap-2">
+                  <code dir="ltr" className="flex-1 p-2.5 bg-slate-950 text-sky-300 rounded-lg font-mono text-[11px] break-all">
+                    {state.apps.find((a) => a.id === keyModalApp.id)?.publicKeyHex ?? keyModalApp.publicKeyHex}
+                  </code>
+                  <button
+                    type="button"
+                    onClick={() => copyCode(state.apps.find((a) => a.id === keyModalApp.id)?.publicKeyHex ?? keyModalApp.publicKeyHex, 'hex_modal')}
+                    className="px-3 py-2 border border-slate-300 rounded-lg bg-white hover:bg-slate-50 shrink-0"
+                  >
+                    {copiedPath === 'hex_modal' ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <div className="font-medium text-slate-700 mb-1">کلید عمومی Base64 (معادل خام ۳۲ بایتی):</div>
+                <div className="flex items-center gap-2">
+                  <code dir="ltr" className="flex-1 p-2.5 bg-slate-100 text-slate-800 rounded-lg font-mono text-[11px] break-all">
+                    {state.apps.find((a) => a.id === keyModalApp.id)?.publicKeyBase64 ?? keyModalApp.publicKeyBase64}
+                  </code>
+                  <button
+                    type="button"
+                    onClick={() => copyCode(state.apps.find((a) => a.id === keyModalApp.id)?.publicKeyBase64 ?? keyModalApp.publicKeyBase64, 'b64_modal')}
+                    className="px-3 py-2 border border-slate-300 rounded-lg bg-white hover:bg-slate-50 shrink-0"
+                  >
+                    {copiedPath === 'b64_modal' ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => void runLiveSignatureTest(keyModalApp)}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-medium bg-sky-800 text-white rounded-lg hover:bg-sky-900"
+                >
+                  <ShieldCheck className="w-3.5 h-3.5" />
+                  <span>اجرای تست زنده امضا و راستی‌آزمایی</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await onUpdateApp(keyModalApp.id, { regenerateKeys: true });
+                    await runLiveSignatureTest(keyModalApp);
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium border border-slate-300 rounded-lg bg-white text-slate-800 hover:bg-slate-50"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>تولید جفت کلید جدید همسان</span>
+                </button>
+              </div>
+
+              {sigTestResult && (
+                <div
+                  className={`p-3 rounded-lg border text-xs space-y-2 ${
+                    sigTestResult.verifiedWithAppHex
+                      ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                      : 'bg-red-50 border-red-200 text-red-900'
+                  }`}
+                >
+                  <div className="font-semibold">{sigTestResult.diagnosticMessage}</div>
+                  <div dir="ltr" className="font-mono text-[11px] bg-white/80 p-2 rounded border border-slate-200 break-all">
+                    Token: {sigTestResult.token}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Live Plugin Source Inspector */}
       <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
@@ -403,7 +668,7 @@ export const PluginBuilderView: React.FC<Props> = ({
           <div className="flex items-center gap-2">
             <FolderOpen className="w-4 h-4 text-sky-800" />
             <h3 className="text-sm font-semibold text-slate-900">
-              {lang === 'fa' ? 'مرورگر فایل‌های سورس پلاگین وردپرس (PHP 8.2+ / HPOS)' : 'WordPress Plugin Source Inspector'}
+              {lang === 'fa' ? 'مرورگر فایل‌های سورس پلاگین وردپرس (۱۵ فایل · PHP 8.2+ / HPOS)' : 'WordPress Plugin Source Inspector'}
             </h3>
           </div>
           {activeFile && (
@@ -413,7 +678,7 @@ export const PluginBuilderView: React.FC<Props> = ({
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-slate-200 rounded-lg hover:bg-slate-50 text-slate-700 whitespace-nowrap shrink-0"
             >
               {copiedPath === activeFile.path ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
-              <span>{copiedPath === activeFile.path ? (lang === 'fa' ? 'کپی شد' : 'Copied') : lang === 'fa' ? 'کپی فایل' : 'Copy File'}</span>
+              <span>{copiedPath === activeFile.path ? 'کپی شد' : 'کپی فایل'}</span>
             </button>
           )}
         </div>
